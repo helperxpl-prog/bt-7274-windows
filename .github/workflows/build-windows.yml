@@ -1,0 +1,101 @@
+name: Build Windows Executable & Installer
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      compiler:
+        description: 'Compiler to use (nuitka or pyinstaller)'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - nuitka
+          - pyinstaller
+
+jobs:
+  build-windows:
+    name: Build Standalone EXE & Setup.exe (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+          cache: 'pip'
+
+      - name: Install Build & Application Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          pip install nuitka pyinstaller zstandard
+
+      - name: Compile Standalone Windows Application
+        run: |
+          python build_windows.py --compiler ${{ inputs.compiler || 'auto' }}
+
+      - name: Verify Standalone Executable Hygiene
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\BT-7274\BT-7274.exe")) {
+            Write-Error "CRITICAL: BT-7274.exe was not found in dist\BT-7274!"
+            exit 1
+          }
+          if (Test-Path "dist\BT-7274\config\api_keys.json") {
+            Write-Error "CRITICAL: api_keys.json secret was bundled into dist folder!"
+            exit 1
+          }
+          $leakedPy = Get-ChildItem -Path "dist\BT-7274" -Filter "*.py" -Recurse
+          if ($leakedPy.Count -gt 0) {
+            Write-Warning "Removing exposed raw python files in distribution:"
+            $leakedPy | ForEach-Object { Remove-Item $_.FullName -Force }
+          }
+          Write-Host "✅ Standalone Windows executable verified."
+
+      - name: Setup Inno Setup Compiler (ISCC)
+        shell: pwsh
+        run: |
+          $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $isccPath)) {
+            Write-Host "ISCC not found at default location. Installing via Chocolatey..."
+            choco install innosetup --no-progress
+          }
+          if (-not (Test-Path $isccPath)) {
+            Write-Error "Could not find Inno Setup compiler ISCC.exe"
+            exit 1
+          }
+          echo "ISCC_EXE=$isccPath" >> $env:GITHUB_ENV
+
+      - name: Compile Windows Installer (Setup.exe)
+        shell: pwsh
+        run: |
+          & "$env:ISCC_EXE" installer.iss
+          if (-not (Test-Path "Output\BT-7274-Setup.exe")) {
+            Write-Error "Installer generation failed: Output\BT-7274-Setup.exe not found."
+            exit 1
+          }
+          Write-Host "✅ Inno Setup successfully created Output\BT-7274-Setup.exe"
+
+      - name: Package Portable ZIP Archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\BT-7274\*" -DestinationPath "Output\BT-7274-Portable-Windows.zip" -Force
+          Write-Host "✅ Portable zip archive created: Output\BT-7274-Portable-Windows.zip"
+
+      - name: Upload Windows Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BT-7274-Windows-Setup-and-Portable
+          path: |
+            Output/BT-7274-Setup.exe
+            Output/BT-7274-Portable-Windows.zip
+          retention-days: 14
