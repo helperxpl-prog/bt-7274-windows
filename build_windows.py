@@ -104,6 +104,12 @@ def stage_non_secret_assets(target_dir: Path):
 
 def build_with_nuitka() -> bool:
     log("Building standalone Windows executable with Nuitka...")
+    try:
+        import nuitka  # type: ignore
+    except ImportError:
+        log("Nuitka is not installed in current Python environment.")
+        return False
+
     cmd = [
         sys.executable,
         "-m",
@@ -163,11 +169,6 @@ def build_with_pyinstaller() -> bool:
         "--collect-all=google.genai",
         "--collect-submodules=fastapi",
         "--collect-submodules=uvicorn",
-        "--copy-metadata=google-genai",
-        "--copy-metadata=tqdm",
-        "--copy-metadata=regex",
-        "--copy-metadata=requests",
-        "--copy-metadata=packaging",
         "--hidden-import=PyQt6.QtCore",
         "--hidden-import=PyQt6.QtGui",
         "--hidden-import=PyQt6.QtWidgets",
@@ -181,8 +182,19 @@ def build_with_pyinstaller() -> bool:
         "--hidden-import=win32con",
         "--hidden-import=win32api",
         "--hidden-import=pythoncom",
-        str(ROOT_DIR / "main.py"),
     ]
+
+    # Safely include package metadata ONLY if the package is installed in the current environment
+    metadata_candidates = ["google-genai", "tqdm", "regex", "requests", "packaging"]
+    for pkg_name in metadata_candidates:
+        try:
+            import importlib.metadata
+            importlib.metadata.distribution(pkg_name)
+            cmd.append(f"--copy-metadata={pkg_name}")
+        except Exception:
+            pass
+
+    cmd.append(str(ROOT_DIR / "main.py"))
 
     log(f"Running command: {' '.join(cmd)}")
     result = subprocess.run(cmd)

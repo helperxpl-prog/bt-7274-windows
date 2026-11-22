@@ -37,6 +37,7 @@ send2trash
 youtube-transcript-api
 python-pptx
 openpyxl
+tqdm
 
 # ── Remote dashboard (control from your phone) ────────────────────────────────
 fastapi>=0.110,<1
