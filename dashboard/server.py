@@ -377,7 +377,15 @@ def _ensure_certs() -> bool:
     key_p = certs / "bt.key"
     crt_p = certs / "bt.crt"
     if key_p.exists() and crt_p.exists():
-        return True
+        try:
+            from cryptography import x509
+            cert_obj = x509.load_pem_x509_certificate(crt_p.read_bytes())
+            subject_str = cert_obj.subject.rfc4514_string()
+            if "JARVIS" not in subject_str.upper():
+                return True
+            print("[Dashboard] Regenerating legacy certificate to BT-7274...")
+        except Exception:
+            return True
 
     try:
         import datetime
@@ -396,8 +404,8 @@ def _ensure_certs() -> bool:
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
         who = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "BT Dashboard"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "BT"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "BT-7274 Dashboard"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "BT-7274"),
         ])
 
         # The SAN has to cover every address the phone might use: the LAN IP the
