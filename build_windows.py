@@ -103,7 +103,7 @@ def stage_non_secret_assets(target_dir: Path):
 
 
 def build_with_nuitka() -> bool:
-    log("Building standalone Windows executable with Nuitka (C machine-code compilation)...")
+    log("Building standalone Windows executable with Nuitka...")
     cmd = [
         sys.executable,
         "-m",
@@ -121,6 +121,7 @@ def build_with_nuitka() -> bool:
         "--enable-plugin=pyqt6",
         "--noinclude-pytest-mode=nofollow",
         "--noinclude-unittest-mode=nofollow",
+        "--nofollow-import-to=docx,matplotlib,cv2,mediapipe,playwright,sounddevice,scipy,torch,PIL",
         "--follow-imports",
         str(ROOT_DIR / "main.py"),
     ]
@@ -155,11 +156,11 @@ def build_with_pyinstaller() -> bool:
         f"--icon={ICON_PATH}",
         f"--distpath={DIST_DIR}",
         f"--workpath={BUILD_DIR}",
-        "--collect-submodules=actions",
-        "--collect-submodules=core",
-        "--collect-submodules=plugins",
-        "--collect-submodules=memory",
-        "--collect-submodules=google.genai",
+        "--collect-all=actions",
+        "--collect-all=core",
+        "--collect-all=plugins",
+        "--collect-all=memory",
+        "--collect-all=google.genai",
         "--collect-submodules=fastapi",
         "--collect-submodules=uvicorn",
         "--copy-metadata=google-genai",
@@ -174,6 +175,12 @@ def build_with_pyinstaller() -> bool:
         "--hidden-import=pycaw",
         "--hidden-import=win10toast",
         "--hidden-import=winreg",
+        "--hidden-import=wmi",
+        "--hidden-import=pywinauto",
+        "--hidden-import=win32gui",
+        "--hidden-import=win32con",
+        "--hidden-import=win32api",
+        "--hidden-import=pythoncom",
         str(ROOT_DIR / "main.py"),
     ]
 
@@ -223,8 +230,8 @@ def sanitize_distribution():
 
 def main():
     parser = argparse.ArgumentParser(description="Build BT-7274 standalone Windows distribution.")
-    parser.add_argument("--compiler", choices=["auto", "nuitka", "pyinstaller"], default="auto",
-                        help="Compiler to use (defaults to nuitka if available, else pyinstaller)")
+    parser.add_argument("--compiler", choices=["pyinstaller", "nuitka", "auto"], default="pyinstaller",
+                        help="Compiler to use (defaults to pyinstaller)")
     parser.add_argument("--clean", action="store_true", help="Clean build directories before starting")
     args = parser.parse_args()
 
@@ -232,12 +239,7 @@ def main():
 
     compiler = args.compiler
     if compiler == "auto":
-        # Check if nuitka is importable
-        try:
-            import nuitka  # type: ignore
-            compiler = "nuitka"
-        except ImportError:
-            compiler = "pyinstaller"
+        compiler = "pyinstaller"
 
     log(f"Selected compiler: {compiler}")
 
@@ -246,6 +248,7 @@ def main():
         success = build_with_nuitka()
         if not success:
             log("Attempting fallback to PyInstaller...")
+            clean_build_artifacts()
             success = build_with_pyinstaller()
     else:
         success = build_with_pyinstaller()

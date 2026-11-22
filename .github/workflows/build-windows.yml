@@ -8,14 +8,14 @@ on:
   workflow_dispatch:
     inputs:
       compiler:
-        description: 'Compiler to use (nuitka or pyinstaller)'
+        description: 'Compiler to use (pyinstaller or nuitka)'
         required: true
-        default: 'auto'
+        default: 'pyinstaller'
         type: choice
         options:
-          - auto
-          - nuitka
           - pyinstaller
+          - nuitka
+          - auto
 
 jobs:
   build-windows:
@@ -37,11 +37,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
-          pip install nuitka pyinstaller zstandard
+          pip install pyinstaller zstandard
 
       - name: Compile Standalone Windows Application
         run: |
-          python build_windows.py --compiler ${{ inputs.compiler || 'auto' }}
+          python build_windows.py --compiler ${{ inputs.compiler || 'pyinstaller' }}
 
       - name: Verify Standalone Executable Hygiene
         shell: pwsh
