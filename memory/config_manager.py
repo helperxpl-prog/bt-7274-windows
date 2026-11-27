@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -7,8 +8,46 @@ def get_base_dir() -> Path:
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent.parent
 
+
+def _user_data_dir() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "BT-7274"
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "BT-7274"
+    return Path.home() / ".local" / "share" / "bt7274"
+
+
+def _is_dir_writable(d: Path) -> bool:
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / ".write_test"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def get_config_dir() -> Path:
+    """Return a writable config directory for api_keys.json.
+
+    Uses <BASE_DIR>/config when running from source or when that directory is
+    writable; falls back to the per-user AppData/Application Support directory
+    when the install directory is read-only (e.g. C:\\Program Files\\BT-7274).
+    """
+    local_dir = BASE_DIR / "config"
+    if not getattr(sys, "frozen", False) or _is_dir_writable(local_dir):
+        return local_dir
+    return _user_data_dir() / "config"
+
+
+def get_api_keys_path() -> Path:
+    """Return the path to api_keys.json in the active config directory."""
+    return CONFIG_FILE
+
+
 BASE_DIR    = get_base_dir()
-CONFIG_DIR  = BASE_DIR / "config"
+CONFIG_DIR  = get_config_dir()
 CONFIG_FILE = CONFIG_DIR / "api_keys.json"
 
 def ensure_config_dir() -> None:

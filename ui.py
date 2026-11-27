@@ -51,9 +51,11 @@ def _base_dir() -> Path:
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent
 
+from memory.config_manager import get_api_keys_path
+
 BASE_DIR   = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
-API_FILE   = CONFIG_DIR / "api_keys.json"
+API_FILE   = get_api_keys_path()
 
 
 def _read_full_config() -> dict:
@@ -2883,6 +2885,7 @@ class SetupOverlay(QWidget):
         self._key_input.setPlaceholderText("Paste Gemini API Key (AIza...)")
         self._key_input.setFont(QFont("Courier New", 10))
         self._key_input.setFixedHeight(32)
+        self._key_input.returnPressed.connect(self._submit)
         self._key_input.setStyleSheet(f"""
             QLineEdit {{
                 background: #000d12; color: {C.TEXT};
@@ -8522,11 +8525,18 @@ class MainWindow(QMainWindow):
         self._overlay = ov
 
     def _on_setup_done(self, key: str, os_name: str):
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        API_FILE.write_text(
-            json.dumps({"gemini_api_key": key, "os_system": os_name}, indent=4),
-            encoding="utf-8",
-        )
+        try:
+            API_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = _read_full_config()
+            data["gemini_api_key"] = key
+            data["os_system"] = os_name
+            API_FILE.write_text(
+                json.dumps(data, indent=4),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            self._log.append_log(f"ERR: Failed to save API key to {API_FILE}: {e}")
+            return
         self._ready = True
         if self._overlay:
             self._overlay.hide()

@@ -86,7 +86,23 @@ from core.wake_word            import (
 from core.session_logger       import setup_session_logger, flush_logs
 
 # Initialize rotating session logging (~/.local/share/bt7274/logs/bt7274.log)
-setup_session_logger()
+_bt_logger = setup_session_logger()
+
+def _log_unhandled_exception(exc_type, exc_value, exc_tb):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+    _bt_logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+    try:
+        flush_logs()
+    except Exception:
+        pass
+    if sys.__excepthook__ is not None:
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+sys.excepthook = _log_unhandled_exception
+if hasattr(threading, "excepthook"):
+    threading.excepthook = lambda args: _log_unhandled_exception(args.exc_type, args.exc_value, args.exc_traceback)
 
 import signal
 import atexit
@@ -118,8 +134,10 @@ def get_base_dir():
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent
 
+from memory.config_manager     import get_api_keys_path
+
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+API_CONFIG_PATH = get_api_keys_path()
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-3.1-flash-live-preview"
 CHANNELS            = 1
