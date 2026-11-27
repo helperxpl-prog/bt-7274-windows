@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 import time
 
 PLUGIN = {
@@ -38,6 +39,10 @@ def _paste(text: str, press_enter: bool = False):
 
 
 def run(parameters: dict, **kwargs) -> str:
+    if sys.platform == "win32":
+        from plugins.vesktop_messenger import run as _win_run
+        return _win_run(parameters, **kwargs)
+
     for tool in ("ydotool", "wl-copy", "kdotool"):
         if not shutil.which(tool):
             return f"Missing dependency '{tool}'. Install ydotool, wl-clipboard, and kdotool."

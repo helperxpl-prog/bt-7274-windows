@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 PLUGIN = {
@@ -50,7 +51,7 @@ NUM_KEYS = {
     "8": 9, "eighth": 9, "eight": 9,
     "9": 10, "last": 10, "nine": 10,
 }
-BROWSERS = ("zen", "firefox", "brave", "chromium", "chrome", "floorp", "vivaldi")
+BROWSERS = ("zen", "firefox", "brave", "chromium", "chrome", "edge", "microsoft edge", "floorp", "vivaldi", "opera")
 
 
 def _cmd(args: list[str]) -> tuple[bool, str]:
@@ -73,10 +74,32 @@ def _ydotool_env() -> dict:
 
 
 def _keys(*combos: str):
+    if sys.platform == "win32":
+        from plugins._comms_core import get_engine
+        get_engine()._ydotool("key", *combos)
+        return
     subprocess.run(["ydotool", "key", *combos], env=_ydotool_env(), check=True, timeout=3)
 
 
+def _get_window_title(wid: str) -> str:
+    if sys.platform == "win32":
+        from plugins._comms_core import win32_get_window_title
+        return win32_get_window_title(int(wid))
+    _, title = _cmd(["kdotool", "getwindowname", wid])
+    return title
+
+
 def _focus_browser() -> tuple[str, str]:
+    if sys.platform == "win32":
+        from plugins._comms_core import win32_focus_window, win32_list_windows
+        for hwnd, title, _ in win32_list_windows():
+            low = title.lower()
+            for b in BROWSERS:
+                if b in low:
+                    win32_focus_window(hwnd, settle=0.2)
+                    return b, str(hwnd)
+        return "", ""
+
     target_wid = ""
     target_name = ""
 
@@ -117,6 +140,14 @@ def _focus_browser() -> tuple[str, str]:
 
 
 def _paste(text: str, enter: bool = True):
+    if sys.platform == "win32":
+        from plugins._comms_core import win32_type_text
+        win32_type_text(text)
+        if enter:
+            time.sleep(0.1)
+            _keys("28:1", "28:0")
+        return
+
     subprocess.run(
         ["wl-copy", "--type", "text/plain;charset=utf-8"],
         input=text.encode("utf-8"),
@@ -132,7 +163,7 @@ def _paste(text: str, enter: bool = True):
 
 def _find_open_tab(wid: str, query: str) -> tuple[bool, str]:
     q = query.lower().strip()
-    _, initial_title = _cmd(["kdotool", "getwindowname", wid])
+    initial_title = _get_window_title(wid)
 
     # If user explicitly says "first tab", jump straight to #1
     if q in NUM_KEYS:
@@ -144,7 +175,7 @@ def _find_open_tab(wid: str, query: str) -> tuple[bool, str]:
     for step in range(25):
         _keys("29:1", "109:1", "109:0", "29:0")  # Ctrl+PageDown
         time.sleep(0.28)
-        _, current_title = _cmd(["kdotool", "getwindowname", wid])
+        current_title = _get_window_title(wid)
 
         if q in current_title.lower():
             return True, f"Switched to open tab: '{current_title}'."
@@ -162,9 +193,10 @@ def _find_open_tab(wid: str, query: str) -> tuple[bool, str]:
 
 
 def run(parameters: dict, **kwargs) -> str:
-    for tool in ("ydotool", "wl-copy", "kdotool"):
-        if not shutil.which(tool):
-            return f"Missing '{tool}'. Install ydotool, wl-clipboard, and kdotool."
+    if sys.platform != "win32":
+        for tool in ("ydotool", "wl-copy", "kdotool"):
+            if not shutil.which(tool):
+                return f"Missing '{tool}'. Install ydotool, wl-clipboard, and kdotool."
 
     params = parameters or {}
     action = str(params.get("action", "")).strip().lower()
@@ -184,11 +216,11 @@ def run(parameters: dict, **kwargs) -> str:
             key_code = NUM_KEYS.get(val_clean)
             if not key_code:
                 return "Specify a tab number from 1 to 9 (or 'first' / 'last')."
-            # Alt+1..9 on Zen/Firefox (56=LAlt), Ctrl+1..9 on Chromium/Brave (29=LCtrl)
-            mod = "56" if is_gecko else "29"
+            # Alt+1..9 on Linux Zen/Firefox (56=LAlt), Ctrl+1..9 on Windows/Chromium/Brave (29=LCtrl)
+            mod = "56" if (is_gecko and sys.platform != "win32") else "29"
             _keys(f"{mod}:1", f"{key_code}:1", f"{key_code}:0", f"{mod}:0")
             time.sleep(0.2)
-            _, new_title = _cmd(["kdotool", "getwindowname", wid])
+            new_title = _get_window_title(wid)
             return f"Switched to tab {val_clean}: '{new_title}'."
 
         if action in ("find_tab", "search_tab"):
@@ -200,13 +232,13 @@ def run(parameters: dict, **kwargs) -> str:
         if action == "next_tab":
             _keys("29:1", "109:1", "109:0", "29:0")
             time.sleep(0.2)
-            _, new_title = _cmd(["kdotool", "getwindowname", wid])
+            new_title = _get_window_title(wid)
             return f"Switched to next tab: '{new_title}'."
 
         if action == "prev_tab":
             _keys("29:1", "104:1", "104:0", "29:0")
             time.sleep(0.2)
-            _, new_title = _cmd(["kdotool", "getwindowname", wid])
+            new_title = _get_window_title(wid)
             return f"Switched to previous tab: '{new_title}'."
 
         if action == "new_tab":

@@ -22,6 +22,7 @@ import random
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 from typing import List, Optional, Sequence, Tuple, Union
@@ -55,18 +56,65 @@ class AbortedError(CommsError):
 # --------------------------------------------------------------------------- #
 KEYCODES = {
     "esc": 1, "escape": 1,
+    "1": 2, "2": 3, "3": 4, "4": 5, "5": 6, "6": 7, "7": 8, "8": 9, "9": 10, "0": 11,
     "backspace": 14, "tab": 15,
     "enter": 28, "return": 28,
     "ctrl": 29, "control": 29, "leftctrl": 29,
     "shift": 42, "leftshift": 42,
     "alt": 56, "leftalt": 56,
     "space": 57,
+    "f11": 87,
     "slash": 53, "/": 53,
     "q": 16, "w": 17, "e": 18, "r": 19, "t": 20, "y": 21, "u": 22, "i": 23, "o": 24, "p": 25,
     "a": 30, "s": 31, "d": 32, "f": 33, "g": 34, "h": 35, "j": 36, "k": 37, "l": 38,
     "z": 44, "x": 45, "c": 46, "v": 47, "b": 48, "n": 49, "m": 50,
-    "home": 102, "up": 103, "end": 107, "down": 108, "delete": 111,
-    "rightctrl": 97, "rightalt": 100, "meta": 125, "super": 125,
+    "home": 102, "up": 103, "pageup": 104, "pgup": 104,
+    "left": 105, "right": 106, "end": 107, "down": 108,
+    "pagedown": 109, "pgdn": 109, "delete": 111,
+    "rightctrl": 97, "rightalt": 100, "meta": 125, "super": 125, "win": 125,
+}
+
+# Mapping from Linux evdev keycodes / names to Windows Virtual-Key (VK) codes.
+_EVDEV_TO_VK = {
+    1: 0x1B,    # VK_ESCAPE
+    2: 0x31, 3: 0x32, 4: 0x33, 5: 0x34, 6: 0x35, 7: 0x36, 8: 0x37, 9: 0x38, 10: 0x39, 11: 0x30,
+    14: 0x08,   # VK_BACK
+    15: 0x09,   # VK_TAB
+    28: 0x0D,   # VK_RETURN
+    29: 0xA2,   # VK_LCONTROL
+    42: 0xA0,   # VK_LSHIFT
+    56: 0xA4,   # VK_LMENU (Alt)
+    57: 0x20,   # VK_SPACE
+    53: 0xBF,   # VK_OEM_2 ('/')
+    87: 0x7A,   # VK_F11
+    97: 0xA3,   # VK_RCONTROL
+    100: 0xA5,  # VK_RMENU
+    102: 0x24,  # VK_HOME
+    103: 0x26,  # VK_UP
+    104: 0x21,  # VK_PRIOR (PageUp)
+    105: 0x25,  # VK_LEFT
+    106: 0x27,  # VK_RIGHT
+    107: 0x23,  # VK_END
+    108: 0x28,  # VK_DOWN
+    109: 0x22,  # VK_NEXT (PageDown)
+    111: 0x2E,  # VK_DELETE
+    125: 0x5B,  # VK_LWIN
+    163: 0xB0,  # VK_MEDIA_NEXT_TRACK
+    164: 0xB3,  # VK_MEDIA_PLAY_PAUSE
+    165: 0xB1,  # VK_MEDIA_PREV_TRACK
+    166: 0xB2,  # VK_MEDIA_STOP
+    # Letters A-Z (evdev -> ASCII/VK)
+    16: ord("Q"), 17: ord("W"), 18: ord("E"), 19: ord("R"), 20: ord("T"),
+    21: ord("Y"), 22: ord("U"), 23: ord("I"), 24: ord("O"), 25: ord("P"),
+    30: ord("A"), 31: ord("S"), 32: ord("D"), 33: ord("F"), 34: ord("G"),
+    35: ord("H"), 36: ord("J"), 37: ord("K"), 38: ord("L"),
+    44: ord("Z"), 45: ord("X"), 46: ord("C"), 47: ord("V"), 48: ord("B"),
+    49: ord("N"), 50: ord("M"),
+}
+
+_WIN_EXTENDED_VKS = {
+    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2E,
+    0xA3, 0xA5, 0x5B, 0x5C, 0xB0, 0xB1, 0xB2, 0xB3,
 }
 
 # Typographic characters ydotool cannot type -> ASCII equivalents.
@@ -83,8 +131,139 @@ _PUNCT_PAUSE = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Windows Win32 native input & window management (zero external dependencies)
+# --------------------------------------------------------------------------- #
+def _win32_send_inputs(inputs_list: list) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    INPUT_KEYBOARD = 1
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", wintypes.WORD),
+            ("wScan", wintypes.WORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("padding", ctypes.c_byte * 32)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("union", _INPUT_UNION)]
+
+    arr = (INPUT * len(inputs_list))()
+    for i, (vk, scan, flags) in enumerate(inputs_list):
+        arr[i].type = INPUT_KEYBOARD
+        arr[i].union.ki = KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=None)
+
+    sent = ctypes.windll.user32.SendInput(len(inputs_list), arr, ctypes.sizeof(INPUT))
+    if sent != len(inputs_list):
+        raise CommsError(f"Win32 SendInput only sent {sent}/{len(inputs_list)} events.")
+
+
+def win32_send_vk_chord(*vks: int) -> None:
+    """Press and release a chord of Windows Virtual-Key codes."""
+    KEYEVENTF_EXTENDEDKEY = 0x0001
+    KEYEVENTF_KEYUP = 0x0002
+    events = []
+    for vk in vks:
+        ext = KEYEVENTF_EXTENDEDKEY if vk in _WIN_EXTENDED_VKS else 0
+        events.append((vk, 0, ext))
+    for vk in reversed(vks):
+        ext = KEYEVENTF_EXTENDEDKEY if vk in _WIN_EXTENDED_VKS else 0
+        events.append((vk, 0, ext | KEYEVENTF_KEYUP))
+    _win32_send_inputs(events)
+
+
+def win32_type_text(text: str) -> int:
+    """Type arbitrary Unicode text directly via Win32 KEYEVENTF_UNICODE (no clipboard)."""
+    KEYEVENTF_UNICODE = 0x0004
+    KEYEVENTF_KEYUP = 0x0002
+    events = []
+    count = 0
+    for ch in text:
+        code = ord(ch)
+        events.append((0, code, KEYEVENTF_UNICODE))
+        events.append((0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP))
+        count += 1
+        # Send in batches of 32 chars so we don't overflow input buffer
+        if len(events) >= 64:
+            _win32_send_inputs(events)
+            events.clear()
+    if events:
+        _win32_send_inputs(events)
+    return count
+
+
+def win32_list_windows() -> List[Tuple[int, str, str]]:
+    """Return list of (hwnd, title, class_name) for visible top-level Windows windows."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    results: List[Tuple[int, str, str]] = []
+
+    def _cb(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                tbuf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, tbuf, length + 1)
+                cbuf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cbuf, 256)
+                title = tbuf.value.strip()
+                if title:
+                    results.append((int(hwnd), title, cbuf.value.strip()))
+        return True
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    user32.EnumWindows(WNDENUMPROC(_cb), 0)
+    return results
+
+
+def win32_get_window_title(hwnd: int) -> str:
+    import ctypes
+    user32 = ctypes.windll.user32
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value.strip()
+
+
+def win32_focus_window(hwnd: int, settle: float = 0.25) -> bool:
+    """Restore if minimized and bring hwnd to foreground reliably on Windows."""
+    import ctypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    SW_RESTORE = 9
+
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, SW_RESTORE)
+
+    fg_hwnd = user32.GetForegroundWindow()
+    fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+    cur_tid = kernel32.GetCurrentThreadId()
+
+    attached = False
+    if fg_tid and fg_tid != cur_tid:
+        attached = bool(user32.AttachThreadInput(cur_tid, fg_tid, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(cur_tid, fg_tid, False)
+
+    time.sleep(settle)
+    return int(user32.GetForegroundWindow()) == int(hwnd)
+
+
 class TacticalCommsEngine:
-    """Wayland-safe typing, key injection and window focusing."""
+    """Cross-platform typing, key injection and window focusing (Win32 on Windows, ydotool/kdotool on Linux)."""
 
     def __init__(
         self,
@@ -95,16 +274,25 @@ class TacticalCommsEngine:
         hesitation_chance: float = 0.04,
         auto_start_daemon: bool = True,
     ) -> None:
-        path = shutil.which(ydotool_bin)
-        if not path:
-            raise YdotoolError("ydotool not found in PATH (sudo pacman -S ydotool).")
-        self.ydotool_bin = path
         self.mean_delay = mean_delay
         self.jitter = jitter
         self.hesitation_chance = hesitation_chance
         self._rng = random.Random()
         self._abort = threading.Event()
         self._lock = threading.RLock()
+        self._is_windows = sys.platform == "win32"
+
+        if self._is_windows:
+            self.ydotool_bin = "win32-sendinput"
+            self.socket_path = "win32"
+            self.env = os.environ.copy()
+            log.info("TacticalCommsEngine initialized with native Win32 SendInput.")
+            return
+
+        path = shutil.which(ydotool_bin)
+        if not path:
+            raise YdotoolError("ydotool not found in PATH (sudo pacman -S ydotool).")
+        self.ydotool_bin = path
 
         self.socket_path = self.discover_socket(auto_start=auto_start_daemon)
         self.env = os.environ.copy()
@@ -192,6 +380,31 @@ class TacticalCommsEngine:
     # ydotool wrapper
     # ------------------------------------------------------------------ #
     def _ydotool(self, *args: object, timeout: float = 10.0) -> None:
+        if self._is_windows:
+            if args and args[0] == "key":
+                down_vks: List[int] = []
+                for token in args[1:]:
+                    s = str(token)
+                    if ":" in s:
+                        code_str, state = s.split(":", 1)
+                        code = int(code_str)
+                        vk = _EVDEV_TO_VK.get(code)
+                        if vk is not None and state == "1":
+                            down_vks.append(vk)
+                if down_vks:
+                    win32_send_vk_chord(*down_vks)
+            elif args and args[0] == "type":
+                # Find text after "--"
+                str_args = [str(a) for a in args[1:]]
+                if "--" in str_args:
+                    idx = str_args.index("--")
+                    text = " ".join(str_args[idx + 1:])
+                else:
+                    text = str_args[-1] if str_args else ""
+                if text:
+                    win32_type_text(text)
+            return
+
         cmd = [self.ydotool_bin, *(str(a) for a in args)]
         try:
             proc = subprocess.run(
@@ -235,6 +448,15 @@ class TacticalCommsEngine:
         codes = [self._resolve_key(k) for k in flat]
         if not codes:
             raise CommsError("press_keys() called with no keys.")
+        if self._is_windows:
+            vks = []
+            for c in codes:
+                vk = _EVDEV_TO_VK.get(c)
+                if vk is None:
+                    raise CommsError(f"No Windows VK mapping for keycode {c}.")
+                vks.append(vk)
+            win32_send_vk_chord(*vks)
+            return
         seq = [f"{c}:1" for c in codes] + [f"{c}:0" for c in reversed(codes)]
         self._ydotool("key", *seq)
 
@@ -266,10 +488,14 @@ class TacticalCommsEngine:
             if self._abort.is_set():
                 raise AbortedError("Typing aborted.")
 
-            clean = "".join(ch for ch in line if ch.isascii() and ch.isprintable())
-            if clean:
-                self._ydotool("type", "-d", "1", "-H", "1", "--", clean)
-                typed += len(clean)
+            if self._is_windows:
+                if line:
+                    typed += win32_type_text(line)
+            else:
+                clean = "".join(ch for ch in line if ch.isascii() and ch.isprintable())
+                if clean:
+                    self._ydotool("type", "-d", "1", "-H", "1", "--", clean)
+                    typed += len(clean)
 
             if i < len(lines) - 1:
                 self.press_shift_enter()
@@ -306,6 +532,9 @@ class TacticalCommsEngine:
         if not names and not classes:
             raise FocusError("focus_window() needs at least one name or class pattern.")
 
+        if self._is_windows:
+            return self._focus_win32(names, classes, settle, verify)
+
         errors: List[str] = []
         if shutil.which("kdotool"):
             try:
@@ -325,6 +554,33 @@ class TacticalCommsEngine:
             errors.append("wmctrl not installed")
 
         raise FocusError("Could not focus target window: " + "; ".join(errors))
+
+    def _focus_win32(
+        self, names: Sequence[str], classes: Sequence[str], settle: float, verify: bool
+    ) -> str:
+        windows = win32_list_windows()
+        patterns_cls = [c.lower() for c in classes]
+        patterns_name = [n.lower() for n in names]
+
+        matched_hwnd = None
+        matched_title = ""
+        # Match by title or class (on Windows, Electron apps like Discord/Vesktop/Chrome have generic class Chrome_WidgetWin_1, so check both)
+        for pat in patterns_name + patterns_cls:
+            for hwnd, title, cls in windows:
+                if pat in title.lower() or pat in cls.lower():
+                    matched_hwnd = hwnd
+                    matched_title = title
+                    break
+            if matched_hwnd:
+                break
+
+        if not matched_hwnd:
+            raise FocusError(f"win32: no window matched {list(names) + list(classes)}")
+
+        ok = win32_focus_window(matched_hwnd, settle=settle)
+        if verify and not ok:
+            log.warning("win32: SetForegroundWindow did not report active match for %s; proceeding.", matched_title)
+        return f"win32:{matched_hwnd}:{matched_title}"
 
     def _focus_kdotool(
         self, names: Sequence[str], classes: Sequence[str], settle: float, verify: bool

@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 PLUGIN = {
@@ -66,10 +67,22 @@ def _ydotool_env() -> dict:
 
 
 def _keys(*combos: str):
+    if sys.platform == "win32":
+        from plugins._comms_core import get_engine
+        get_engine()._ydotool("key", *combos)
+        return
     subprocess.run(["ydotool", "key", *combos], env=_ydotool_env(), check=True, timeout=3)
 
 
 def _find_vesktop_wid() -> str:
+    if sys.platform == "win32":
+        from plugins._comms_core import win32_list_windows
+        for hwnd, title, _ in win32_list_windows():
+            low = title.lower()
+            if "vesktop" in low or "discord" in low:
+                return str(hwnd)
+        return ""
+
     # 1. Match by window class first (works even when title is a DM name like "@friend - Discord")
     for cls in ("vesktop", "Vesktop", "discord"):
         ok, out = _cmd(["kdotool", "search", "--class", cls])
@@ -87,6 +100,36 @@ def _find_vesktop_wid() -> str:
 
 def _ensure_vesktop_focused() -> tuple[bool, str]:
     wid = _find_vesktop_wid()
+
+    if sys.platform == "win32":
+        from plugins._comms_core import win32_focus_window
+        if not wid:
+            # Try launching Vesktop or Discord on Windows
+            candidates = [
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Vesktop", "Vesktop.exe"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Discord", "Update.exe"),
+            ]
+            launched = False
+            if os.path.exists(candidates[0]):
+                subprocess.Popen([candidates[0]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                launched = True
+            elif os.path.exists(candidates[1]):
+                subprocess.Popen([candidates[1], "--processStart", "Discord.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                launched = True
+            elif shutil.which("vesktop"):
+                subprocess.Popen(["vesktop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                launched = True
+            if not launched:
+                return False, "Vesktop/Discord is not running and could not be located."
+            for _ in range(16):
+                time.sleep(0.5)
+                wid = _find_vesktop_wid()
+                if wid:
+                    break
+            if not wid:
+                return False, "Launched Vesktop/Discord, but window did not appear in time."
+        win32_focus_window(int(wid), settle=0.25)
+        return True, wid
 
     # If minimized to tray or not open, launch/unhide Vesktop
     if not wid:
@@ -114,8 +157,12 @@ def _ensure_vesktop_focused() -> tuple[bool, str]:
 
 
 def _type_text(text: str):
-    """Direct fast typing via ydotool with ZERO clipboard usage."""
+    """Direct fast typing with ZERO clipboard usage."""
     if not text:
+        return
+    if sys.platform == "win32":
+        from plugins._comms_core import win32_type_text
+        win32_type_text(text)
         return
     clean = "".join(ch for ch in text if ch.isascii() and ch.isprintable())
     if clean:
@@ -127,9 +174,10 @@ def _type_text(text: str):
 
 
 def run(parameters: dict, **kwargs) -> str:
-    for tool in ("ydotool", "kdotool"):
-        if not shutil.which(tool):
-            return f"Missing '{tool}'. Install ydotool and kdotool."
+    if sys.platform != "win32":
+        for tool in ("ydotool", "kdotool"):
+            if not shutil.which(tool):
+                return f"Missing '{tool}'. Install ydotool and kdotool."
 
     params = parameters or {}
     raw_recipient = str(params.get("recipient", "")).strip()
@@ -186,11 +234,3 @@ def run(parameters: dict, **kwargs) -> str:
 
     except Exception as e:
         return f"Vesktop comms error: {e}"
-
-    finally:
-        if old_clip:
-            subprocess.run(
-                ["wl-copy", "--type", "text/plain;charset=utf-8"],
-                input=old_clip.encode("utf-8"),
-                stderr=subprocess.DEVNULL,
-            )

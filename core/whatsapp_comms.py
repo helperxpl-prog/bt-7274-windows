@@ -214,6 +214,14 @@ class WhatsAppWindowController:
             os.path.expanduser("~/.config/mozilla/firefox/*/sessionstore-backups/previous.jsonlz4"),
             os.path.expanduser("~/.mozilla/firefox/*/sessionstore-backups/*.jsonlz4"),
         ]
+        if sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", "")
+            if appdata:
+                firefox_patterns.extend([
+                    os.path.join(appdata, "Mozilla", "Firefox", "Profiles", "*", "sessionstore-backups", "recovery.jsonlz4"),
+                    os.path.join(appdata, "Mozilla", "Firefox", "Profiles", "*", "sessionstore-backups", "recovery.baklz4"),
+                    os.path.join(appdata, "Mozilla", "Firefox", "Profiles", "*", "sessionstore-backups", "previous.jsonlz4"),
+                ])
         firefox_has_whatsapp = False
         for pat in firefox_patterns:
             for f in glob.glob(pat):
@@ -240,6 +248,14 @@ class WhatsAppWindowController:
             os.path.expanduser("~/.config/BraveSoftware/Brave-Browser/*/Sessions/Tabs_*"),
             os.path.expanduser("~/.config/microsoft-edge/*/Sessions/Tabs_*"),
         ]
+        if sys.platform == "win32":
+            localapp = os.environ.get("LOCALAPPDATA", "")
+            if localapp:
+                chromium_patterns.extend([
+                    os.path.join(localapp, "Google", "Chrome", "User Data", "*", "Sessions", "Tabs_*"),
+                    os.path.join(localapp, "Microsoft", "Edge", "User Data", "*", "Sessions", "Tabs_*"),
+                    os.path.join(localapp, "BraveSoftware", "Brave-Browser", "User Data", "*", "Sessions", "Tabs_*"),
+                ])
         for pat in chromium_patterns:
             for f in glob.glob(pat):
                 try:

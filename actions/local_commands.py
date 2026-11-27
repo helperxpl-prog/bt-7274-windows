@@ -183,8 +183,12 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
             log.error("Screen glance failed: %e", e)
             return "Optic glance encountered an internal error, Pilot.", f"ERR: Glance failed: {e}"
 
-    # ── 2. Volume & Audio Muting (macOS CoreAudio / Linux PipeWire wpctl / pactl)
+    # ── 2. Volume & Audio Muting (Windows pycaw / macOS CoreAudio / Linux PipeWire wpctl)
     if low in ("mute", "silence", "mute audio", "mute sound", "mute volume"):
+        if sys.platform == "win32":
+            from plugins.media_control import _windows_volume
+            _windows_volume("mute", "1")
+            return "Master audio muted, Pilot.", "SYS: Master audio muted (Windows)."
         if sys.platform == "darwin":
             _run_cmd(["osascript", "-e", "set volume output muted true"])
             return "Master audio muted, Pilot.", "SYS: Master audio muted via CoreAudio / osascript."
@@ -192,6 +196,10 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
         return "Master audio muted, Pilot.", "SYS: Master audio sink muted via PipeWire."
 
     if low in ("unmute", "unmute audio", "unmute sound", "unmute volume"):
+        if sys.platform == "win32":
+            from plugins.media_control import _windows_volume
+            _windows_volume("mute", "0")
+            return "Master audio unmuted, Pilot.", "SYS: Master audio unmuted (Windows)."
         if sys.platform == "darwin":
             _run_cmd(["osascript", "-e", "set volume output muted false"])
             return "Master audio unmuted, Pilot.", "SYS: Master audio unmuted via CoreAudio / osascript."
@@ -199,6 +207,10 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
         return "Master audio unmuted, Pilot.", "SYS: Master audio sink unmuted via PipeWire."
 
     if low in ("volume up", "increase volume", "louder", "turn it up", "sound up"):
+        if sys.platform == "win32":
+            from plugins.media_control import _windows_volume
+            _windows_volume("volume-up", "5")
+            return "Master audio output increased by 5%, Pilot.", "SYS: Volume +5% (Windows)."
         if sys.platform == "darwin":
             _run_cmd(["osascript", "-e", "set volume output volume ((output volume of (get volume settings)) + 5)"])
             return "Master audio output increased by 5%, Pilot.", "SYS: Volume +5% (osascript)."
@@ -206,6 +218,10 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
         return "Master audio output increased by 5%, Pilot.", "SYS: Volume +5% (wpctl)."
 
     if low in ("volume down", "decrease volume", "softer", "turn it down", "sound down", "lower volume"):
+        if sys.platform == "win32":
+            from plugins.media_control import _windows_volume
+            _windows_volume("volume-down", "5")
+            return "Master audio output decreased by 5%, Pilot.", "SYS: Volume -5% (Windows)."
         if sys.platform == "darwin":
             _run_cmd(["osascript", "-e", "set volume output volume ((output volume of (get volume settings)) - 5)"])
             return "Master audio output decreased by 5%, Pilot.", "SYS: Volume -5% (osascript)."
@@ -215,6 +231,10 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
     vol_m = re.search(r"(?:set\s+volume(?:\s+to)?|volume)\s+(\d{1,3})\s*%?", low)
     if vol_m:
         val = max(0, min(100, int(vol_m.group(1))))
+        if sys.platform == "win32":
+            from plugins.media_control import _windows_volume
+            _windows_volume("system-volume", str(val))
+            return f"Master audio volume set to {val}%, Pilot.", f"SYS: Volume set to {val}% (Windows)."
         if sys.platform == "darwin":
             _run_cmd(["osascript", "-e", f"set volume output volume {val}"])
             return f"Master audio volume set to {val}%, Pilot.", f"SYS: Volume set to {val}% (osascript)."
@@ -244,8 +264,12 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
             log.error("Local mood mix launch failed: %s", e)
             return "Failed to launch mood mix, Pilot.", f"ERR: Mood mix failed: {e}"
 
-    # ── 4. Media Controls (macOS AppleScript / Linux MPRIS playerctl) ───────
+    # ── 4. Media Controls (Windows VK_MEDIA / macOS AppleScript / Linux MPRIS playerctl)
     if low in ("media play", "media pause", "toggle media", "play music", "pause music", "pause song", "resume music", "toggle song"):
+        if sys.platform == "win32":
+            from plugins._comms_core import win32_send_vk_chord
+            win32_send_vk_chord(0xB3)  # VK_MEDIA_PLAY_PAUSE
+            return "Media playback toggled, Pilot.", "SYS: Media playback toggled (Windows)."
         if sys.platform == "darwin":
             try:
                 from core.mac_input import send_media_control
@@ -258,6 +282,10 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
         return "Media playback toggled, Pilot.", "SYS: Media playback toggled (playerctl play-pause)."
 
     if low in ("next song", "next track", "skip song", "skip track", "next video"):
+        if sys.platform == "win32":
+            from plugins._comms_core import win32_send_vk_chord
+            win32_send_vk_chord(0xB0)  # VK_MEDIA_NEXT_TRACK
+            return "Skipped to next track, Pilot.", "SYS: Media track skipped forward (Windows)."
         if sys.platform == "darwin":
             try:
                 from core.mac_input import send_media_control
@@ -270,6 +298,10 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
         return "Skipped to next track, Pilot.", "SYS: Media track skipped forward."
 
     if low in ("previous song", "prev song", "previous track", "prev track"):
+        if sys.platform == "win32":
+            from plugins._comms_core import win32_send_vk_chord
+            win32_send_vk_chord(0xB1)  # VK_MEDIA_PREV_TRACK
+            return "Returned to previous track, Pilot.", "SYS: Media track returned to previous (Windows)."
         if sys.platform == "darwin":
             try:
                 from core.mac_input import send_media_control
@@ -281,8 +313,12 @@ def handle_local_command(text: str, ui=None, bt=None) -> Optional[Tuple[str, str
             _run_cmd(["playerctl", "previous"])
         return "Returned to previous track, Pilot.", "SYS: Media track returned to previous."
 
-    # ── 5. Desktop Navigation (macOS F11 / KDE Plasma 6 / Win+D) ─────────────
+    # ── 5. Desktop Navigation (Windows Win+D / macOS F11 / KDE Plasma 6) ─────
     if low in ("show desktop", "minimize all", "minimize all windows", "desktop view", "go to desktop"):
+        if sys.platform == "win32":
+            from plugins._comms_core import win32_send_vk_chord
+            win32_send_vk_chord(0x5B, ord("D"))  # Win+D
+            return "Desktop workspace displayed, Pilot.", "SYS: Desktop workspace shown (Windows Win+D)."
         if sys.platform == "darwin":
             _run_cmd(["osascript", "-e", 'tell application "System Events" to key code 103'])
             return "Desktop workspace displayed, Pilot.", "SYS: Desktop workspace shown (macOS F11)."

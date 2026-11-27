@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 PLUGIN = {
@@ -54,7 +55,7 @@ PLUGIN = {
     }
 }
 
-BROWSERS = ("zen", "firefox", "brave", "chromium", "chrome", "floorp", "vivaldi")
+BROWSERS = ("zen", "firefox", "brave", "chromium", "chrome", "edge", "microsoft edge", "floorp", "vivaldi", "opera")
 
 
 def _run_cmd(args: list[str]) -> tuple[bool, str]:
@@ -82,11 +83,27 @@ def _ydotool_env() -> dict:
 
 
 def _send_keys(*combos: str):
+    if sys.platform == "win32":
+        from plugins._comms_core import get_engine
+        get_engine()._ydotool("key", *combos)
+        return
     subprocess.run(["ydotool", "key", *combos], env=_ydotool_env(), check=True, timeout=3)
 
 
 def _get_focused_browser_info() -> tuple[str, str]:
     """Returns (wid, window_title) if a browser is currently focused, else ('', '')."""
+    if sys.platform == "win32":
+        import ctypes
+        from plugins._comms_core import win32_get_window_title
+        hwnd = int(ctypes.windll.user32.GetForegroundWindow())
+        if not hwnd:
+            return "", ""
+        title = win32_get_window_title(hwnd)
+        low = title.lower()
+        if any(b in low for b in BROWSERS) or "youtube" in low:
+            return str(hwnd), title
+        return "", ""
+
     if not shutil.which("kdotool"):
         return "", ""
     ok, wid = _run_cmd(["kdotool", "getactivewindow"])
@@ -103,7 +120,7 @@ def _get_focused_browser_info() -> tuple[str, str]:
 
 def _control_focused_browser_tab(cmd: str, seconds: int, title: str) -> tuple[bool, str]:
     """Controls the visible browser tab directly via keyboard shortcuts (no D-Bus cross-tab confusion)."""
-    if not shutil.which("ydotool"):
+    if sys.platform != "win32" and not shutil.which("ydotool"):
         return False, ""
 
     is_youtube = "youtube" in title.lower()
@@ -165,6 +182,69 @@ def _control_focused_browser_tab(cmd: str, seconds: int, title: str) -> tuple[bo
     return False, ""
 
 
+def _windows_volume(cmd: str, value: str) -> str:
+    """Control Windows master volume via pycaw, with Win32 VK_VOLUME_* fallback."""
+    try:
+        from ctypes import POINTER, cast
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        vol = cast(interface, POINTER(IAudioEndpointVolume))
+
+        if cmd == "mute":
+            if value == "1":
+                vol.SetMute(1, None)
+            elif value == "0":
+                vol.SetMute(0, None)
+            else:
+                cur = vol.GetMute()
+                vol.SetMute(0 if cur else 1, None)
+            return "Toggled system audio mute."
+
+        if cmd == "volume-up":
+            step = (int(value) if value.isdigit() else 5) / 100.0
+            cur = vol.GetMasterVolumeLevelScalar()
+            nxt = min(1.0, cur + step)
+            vol.SetMasterVolumeLevelScalar(nxt, None)
+            return f"Increased system volume to {round(nxt * 100)}%."
+
+        if cmd == "volume-down":
+            step = (int(value) if value.isdigit() else 5) / 100.0
+            cur = vol.GetMasterVolumeLevelScalar()
+            nxt = max(0.0, cur - step)
+            vol.SetMasterVolumeLevelScalar(nxt, None)
+            return f"Decreased system volume to {round(nxt * 100)}%."
+
+        if cmd == "system-volume":
+            if not value:
+                cur = vol.GetMasterVolumeLevelScalar()
+                return f"Current system volume: {round(cur * 100)}%"
+            lvl = max(0, min(100, int(float(value.replace("%", "")))))
+            vol.SetMasterVolumeLevelScalar(lvl / 100.0, None)
+            return f"System volume set to {lvl}%."
+    except Exception:
+        pass
+
+    # Fallback: hardware volume keys via SendInput
+    from plugins._comms_core import win32_send_vk_chord
+    if cmd == "mute":
+        win32_send_vk_chord(0xAD)  # VK_VOLUME_MUTE
+        return "Toggled system audio mute."
+    if cmd == "volume-up":
+        steps = max(1, (int(value) if value.isdigit() else 5) // 2)
+        for _ in range(steps):
+            win32_send_vk_chord(0xAF)  # VK_VOLUME_UP
+        return "Increased system volume."
+    if cmd == "volume-down":
+        steps = max(1, (int(value) if value.isdigit() else 5) // 2)
+        for _ in range(steps):
+            win32_send_vk_chord(0xAE)  # VK_VOLUME_DOWN
+        return "Decreased system volume."
+    return "System volume adjustment requires pycaw on Windows."
+
+
 def run(parameters: dict, **kwargs) -> str:
     params = parameters or {}
     cmd = str(params.get("command", "pause")).strip().lower()
@@ -174,8 +254,11 @@ def run(parameters: dict, **kwargs) -> str:
     ignore_player = str(params.get("ignore_player", "")).strip()
     all_players = bool(params.get("all_players", False))
 
-    # 1. System-wide PipeWire volume / mute controls
+    # 1. System-wide volume / mute controls
     if cmd in ("system-volume", "volume-up", "volume-down", "mute"):
+        if sys.platform == "win32":
+            return _windows_volume(cmd, value)
+
         if not shutil.which("wpctl"):
             return "wpctl not found. Install wireplumber: sudo pacman -S wireplumber"
 
@@ -211,7 +294,22 @@ def run(parameters: dict, **kwargs) -> str:
             if handled:
                 return msg
 
-    # 3. Background players (Spotify, VLC, mpv) & metadata/status via playerctl
+    # 3. Background players
+    if sys.platform == "win32":
+        from plugins._comms_core import win32_send_vk_chord
+        vk_map = {
+            "pause": 0xB3,       # VK_MEDIA_PLAY_PAUSE
+            "play": 0xB3,
+            "play-pause": 0xB3,
+            "next": 0xB0,        # VK_MEDIA_NEXT_TRACK
+            "previous": 0xB1,    # VK_MEDIA_PREV_TRACK
+            "stop": 0xB2,        # VK_MEDIA_STOP
+        }
+        if cmd in vk_map:
+            win32_send_vk_chord(vk_map[cmd])
+            return f"Executed media key '{cmd}'."
+        return f"Media command '{cmd}' is not supported natively in Windows background mode without an active browser tab."
+
     if not shutil.which("playerctl"):
         return "playerctl is not installed. Run: sudo pacman -S playerctl"
 

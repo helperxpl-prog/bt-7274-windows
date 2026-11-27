@@ -35,6 +35,46 @@ _cache_lock = threading.Lock()
 _CACHE_TTL = 4.0  # seconds
 
 
+def _get_windows_camera_names() -> list[str]:
+    """Query friendly camera device names on Windows via WMI / PowerShell."""
+    import sys
+    if sys.platform != "win32":
+        return []
+    # 1. Try wmi package if installed (fast, no subprocess)
+    try:
+        import wmi  # type: ignore
+        c = wmi.WMI()
+        names = [
+            str(dev.Name).strip()
+            for dev in c.Win32_PnPEntity()
+            if getattr(dev, "PNPClass", "") in ("Camera", "Image") and getattr(dev, "Name", None)
+        ]
+        if names:
+            return names
+    except Exception:
+        pass
+    # 2. PowerShell CIM fallback (no window flash)
+    try:
+        ps_cmd = (
+            "Get-CimInstance Win32_PnPEntity "
+            "| Where-Object { $_.PNPClass -in 'Camera','Image' -and $_.Status -eq 'OK' } "
+            "| Select-Object -ExpandProperty Name"
+        )
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=2.5,
+            creationflags=flags,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+    except Exception:
+        pass
+    return []
+
+
 def _clean_camera_label(raw: str, dev_path: str = "") -> str:
     """Format a clean, readable name from v4l2 or sysfs output."""
     s = re.sub(r"\s*\(usb-[^)]+\)", "", raw).strip()
@@ -148,25 +188,61 @@ def list_cameras(force_refresh: bool = False) -> list[dict[str, Any]]:
             except Exception:
                 pass
 
-    # 3. OpenCV probe fallback (e.g. Windows/macOS or minimal environments)
+    # 3. Windows / macOS / generic OpenCV probe
     if not cameras:
         try:
             import cv2
             import sys
 
-            cap_backend = (
-                getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
-                if sys.platform == "darwin"
-                else getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY)
-                if sys.platform == "win32"
-                else cv2.CAP_ANY
-            )
-            for i in range(4):
-                cap = cv2.VideoCapture(i, cap_backend)
-                if cap.isOpened():
-                    cameras.append({"index": i, "name": f"Camera {i}", "path": str(i)})
-                    cap.release()
-                    seen_indices.add(i)
+            if sys.platform == "win32":
+                win_names = _get_windows_camera_names()
+                backends: list[int] = []
+                for attr in ("CAP_DSHOW", "CAP_MSMF", "CAP_ANY"):
+                    b = getattr(cv2, attr, None)
+                    if b is not None and b not in backends:
+                        backends.append(b)
+                if not backends:
+                    backends = [cv2.CAP_ANY]
+
+                for i in range(6):
+                    opened_any = False
+                    for b in backends:
+                        cap = None
+                        try:
+                            cap = cv2.VideoCapture(i, b)
+                            if cap.isOpened():
+                                opened_any = True
+                                ret, frame = cap.read()
+                                if ret and frame is not None:
+                                    label = win_names[i] if i < len(win_names) else f"Camera {i}"
+                                    cameras.append({"index": i, "name": label, "path": str(i)})
+                                    seen_indices.add(i)
+                                    opened_any = False
+                                    break
+                        except Exception:
+                            pass
+                        finally:
+                            if cap is not None:
+                                try:
+                                    cap.release()
+                                except Exception:
+                                    pass
+                    if opened_any and i not in seen_indices:
+                        label = win_names[i] if i < len(win_names) else f"Camera {i}"
+                        cameras.append({"index": i, "name": label, "path": str(i)})
+                        seen_indices.add(i)
+            else:
+                cap_backend = (
+                    getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
+                    if sys.platform == "darwin"
+                    else cv2.CAP_ANY
+                )
+                for i in range(4):
+                    cap = cv2.VideoCapture(i, cap_backend)
+                    if cap.isOpened():
+                        cameras.append({"index": i, "name": f"Camera {i}", "path": str(i)})
+                        cap.release()
+                        seen_indices.add(i)
         except Exception:
             pass
 
@@ -221,3 +297,88 @@ def switch_camera(target_index: int | None = None) -> int:
 
     save_camera_index(chosen)
     return chosen
+
+
+def open_camera(
+    index: int = 0,
+    width: int = 0,
+    height: int = 0,
+    fps: int = 0,
+) -> tuple[Any, bool]:
+    """Open a camera with OS-appropriate backend fallbacks.
+
+    Returns (cv2.VideoCapture | None, reading_from_vcam: bool).
+    """
+    import sys
+    import cv2
+
+    reading_vcam = False
+    cap = None
+
+    def _try_open(idx: Any, backend: int | None = None) -> Any:
+        try:
+            c = cv2.VideoCapture(idx) if backend is None else cv2.VideoCapture(idx, backend)
+            if c is not None and c.isOpened():
+                return c
+            if c is not None:
+                c.release()
+        except Exception:
+            pass
+        return None
+
+    indices_to_try = [int(index)]
+    if int(index) != 0:
+        indices_to_try.append(0)
+
+    if sys.platform == "win32":
+        backends: list[int] = []
+        for attr in ("CAP_DSHOW", "CAP_MSMF", "CAP_ANY"):
+            b = getattr(cv2, attr, None)
+            if b is not None and b not in backends:
+                backends.append(b)
+        if not backends:
+            backends = [cv2.CAP_ANY]
+
+        for idx in indices_to_try:
+            for b in backends:
+                c = _try_open(idx, b)
+                if c is not None:
+                    cap = c
+                    break
+            if cap is not None:
+                break
+    elif sys.platform == "darwin":
+        backends = []
+        for attr in ("CAP_AVFOUNDATION", "CAP_ANY"):
+            b = getattr(cv2, attr, None)
+            if b is not None and b not in backends:
+                backends.append(b)
+        for idx in indices_to_try:
+            for b in backends:
+                c = _try_open(idx, b)
+                if c is not None:
+                    cap = c
+                    break
+            if cap is not None:
+                break
+    else:
+        for idx in indices_to_try:
+            c = _try_open(idx)
+            if c is not None:
+                cap = c
+                break
+        if cap is None and os.path.exists("/dev/video10"):
+            c = _try_open("/dev/video10")
+            if c is not None:
+                cap = c
+                reading_vcam = True
+
+    if cap is not None:
+        if width > 0:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        if height > 0:
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if fps > 0:
+            cap.set(cv2.CAP_PROP_FPS, fps)
+
+    return cap, reading_vcam

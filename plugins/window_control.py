@@ -1,10 +1,11 @@
 import shutil
 import subprocess
+import sys
 
 PLUGIN = {
     "name": "window_control",
     "description": (
-        "Manages and switches desktop windows on KDE Plasma (EndeavourOS). "
+        "Manages and switches desktop windows (Windows Win32 & Linux KDE Plasma). "
         "Supports listing open windows, focusing/switching to an app by partial name or title, "
         "Alt+Tab cycling, minimizing, maximizing, toggling fullscreen, closing windows, "
         "and snapping windows to the left or right half of the screen."
@@ -33,15 +34,106 @@ PLUGIN = {
     }
 }
 
-# Friendly aliases so natural speech matches KDE window classes/titles reliably
+# Friendly aliases so natural speech matches window classes/titles reliably
 APP_ALIASES = {
-    "terminal": "konsole",
-    "discord": "vesktop",
-    "browser": "zen",
-    "vscode": "code",
-    "files": "dolphin",
-    "settings": "systemsettings",
+    "terminal": "konsole" if sys.platform != "win32" else "terminal",
+    "discord": "discord" if sys.platform == "win32" else "vesktop",
+    "browser": "chrome" if sys.platform == "win32" else "zen",
+    "vscode": "visual studio code" if sys.platform == "win32" else "code",
+    "files": "file explorer" if sys.platform == "win32" else "dolphin",
+    "settings": "settings" if sys.platform == "win32" else "systemsettings",
 }
+
+
+def _run_windows(action: str, target: str) -> str:
+    import ctypes
+    from plugins._comms_core import (
+        win32_focus_window,
+        win32_get_window_title,
+        win32_list_windows,
+        win32_send_vk_chord,
+    )
+
+    user32 = ctypes.windll.user32
+    SW_MINIMIZE = 6
+    SW_MAXIMIZE = 3
+    WM_CLOSE = 0x0010
+
+    if action == "list":
+        wins = win32_list_windows()
+        if not wins:
+            return "No active desktop windows detected, Pilot."
+        return "Open windows:\n" + "\n".join(f"- {title}" for _, title, _ in wins)
+
+    if action == "alt_tab":
+        win32_send_vk_chord(0xA4, 0x09)  # Alt+Tab
+        return "Switched to previous window."
+
+    if action == "show_desktop":
+        win32_send_vk_chord(0x5B, ord("D"))  # Win+D
+        return "Toggled desktop view."
+
+    hwnd = 0
+    title = ""
+    if target:
+        q = APP_ALIASES.get(target.lower(), target.lower())
+        for h, t, c in win32_list_windows():
+            if q in t.lower() or q in c.lower():
+                hwnd, title = h, t
+                break
+        if not hwnd and target.lower() == "discord":
+            for h, t, c in win32_list_windows():
+                if "vesktop" in t.lower():
+                    hwnd, title = h, t
+                    break
+        if not hwnd and target.lower() == "browser":
+            for b in ("chrome", "edge", "firefox", "brave", "zen", "opera"):
+                for h, t, _ in win32_list_windows():
+                    if b in t.lower():
+                        hwnd, title = h, t
+                        break
+                if hwnd:
+                    break
+        if not hwnd:
+            return f"No open window matching '{target}' found, Pilot."
+    else:
+        hwnd = int(user32.GetForegroundWindow())
+        if not hwnd:
+            return "Could not detect active window."
+        title = win32_get_window_title(hwnd)
+
+    if action == "focus":
+        win32_focus_window(hwnd)
+        return f"Focused '{title}', Pilot."
+
+    if action == "minimize":
+        user32.ShowWindow(hwnd, SW_MINIMIZE)
+        return f"Minimized '{title}'."
+
+    if action == "maximize":
+        win32_focus_window(hwnd, settle=0.1)
+        user32.ShowWindow(hwnd, SW_MAXIMIZE)
+        return f"Maximized '{title}'."
+
+    if action == "close":
+        user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+        return f"Closed '{title}'."
+
+    win32_focus_window(hwnd, settle=0.15)
+
+    if action == "fullscreen":
+        win32_send_vk_chord(0x7A)  # F11
+        return f"Toggled fullscreen on '{title}'."
+
+    if action == "snap_left":
+        win32_send_vk_chord(0x5B, 0x25)  # Win+Left
+        return f"Snapped '{title}' to left half."
+
+    if action == "snap_right":
+        win32_send_vk_chord(0x5B, 0x27)  # Win+Right
+        return f"Snapped '{title}' to right half."
+
+    return f"Unknown window action: {action}"
 
 
 def _run(args: list[str]) -> tuple[bool, str]:
@@ -88,12 +180,15 @@ def _find_window_id(target: str) -> tuple[str, str]:
 
 
 def run(parameters: dict, **kwargs) -> str:
-    if not shutil.which("kdotool"):
-        return "kdotool is not installed. Run: yay -S kdotool"
-
     params = parameters or {}
     action = str(params.get("action", "focus")).strip().lower()
     target = str(params.get("target", "")).strip()
+
+    if sys.platform == "win32":
+        return _run_windows(action, target)
+
+    if not shutil.which("kdotool"):
+        return "kdotool is not installed. Run: yay -S kdotool"
 
     if action == "list":
         wins = _list_windows()

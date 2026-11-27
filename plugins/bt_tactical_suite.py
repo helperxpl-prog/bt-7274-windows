@@ -5,15 +5,19 @@ Universal run(*args, **kwargs) adapter compatible with any BT dispatcher signatu
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
 import webbrowser
 from datetime import date, datetime
 from pathlib import Path
+
+_IS_WIN = sys.platform == "win32"
 
 
 def _cmd(args: list[str], timeout: int = 8) -> tuple[bool, str]:
@@ -35,29 +39,85 @@ def _cmd(args: list[str], timeout: int = 8) -> tuple[bool, str]:
         return False, str(exc)
 
 
-APP_ALIASES: dict[str, list[str]] = {
-    "discord": ["vesktop"],
-    "vesktop": ["vesktop"],
-    "browser": ["zen-browser"],
-    "zen": ["zen-browser"],
-    "firefox": ["firefox"],
-    "brave": ["brave"],
-    "chromium": ["chromium"],
-    "terminal": ["konsole"],
-    "konsole": ["konsole"],
-    "files": ["dolphin"],
-    "dolphin": ["dolphin"],
-    "steam": ["steam"],
-    "spotify": ["spotify"],
-    "code": ["code"],
-    "vscode": ["code"],
-    "settings": ["systemsettings"],
-    "monitor": ["plasma-systemmonitor"],
-}
+APP_ALIASES: dict[str, list[str]] = (
+    {
+        "discord": ["Discord.exe"],
+        "vesktop": ["Vesktop.exe"],
+        "browser": ["chrome.exe"],
+        "chrome": ["chrome.exe"],
+        "edge": ["msedge.exe"],
+        "firefox": ["firefox.exe"],
+        "brave": ["brave.exe"],
+        "terminal": ["wt.exe"],
+        "cmd": ["cmd.exe"],
+        "powershell": ["powershell.exe"],
+        "files": ["explorer.exe"],
+        "explorer": ["explorer.exe"],
+        "steam": ["steam.exe"],
+        "spotify": ["Spotify.exe"],
+        "code": ["code.cmd"],
+        "vscode": ["code.cmd"],
+        "settings": ["ms-settings:"],
+        "monitor": ["taskmgr.exe"],
+        "calculator": ["calc.exe"],
+        "notepad": ["notepad.exe"],
+    }
+    if _IS_WIN
+    else {
+        "discord": ["vesktop"],
+        "vesktop": ["vesktop"],
+        "browser": ["zen-browser"],
+        "zen": ["zen-browser"],
+        "firefox": ["firefox"],
+        "brave": ["brave"],
+        "chromium": ["chromium"],
+        "terminal": ["konsole"],
+        "konsole": ["konsole"],
+        "files": ["dolphin"],
+        "dolphin": ["dolphin"],
+        "steam": ["steam"],
+        "spotify": ["spotify"],
+        "code": ["code"],
+        "vscode": ["code"],
+        "settings": ["systemsettings"],
+        "monitor": ["plasma-systemmonitor"],
+    }
+)
+
+
+def _win_notify(title: str, msg: str) -> None:
+    try:
+        from win10toast import ToastNotifier
+        ToastNotifier().show_toast(title, msg, duration=5, threaded=True)
+    except Exception:
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, msg, title, 0x40)
+        except Exception:
+            pass
 
 
 def _launch_app(target: str) -> str:
     key = target.strip().lower()
+    if _IS_WIN:
+        alias = APP_ALIASES.get(key)
+        if alias and alias[0].endswith(":"):
+            try:
+                os.startfile(alias[0])
+                return f"Affirmative. Opening {target}."
+            except Exception as exc:
+                return f"Failed to launch {target}: {exc}"
+        exe = alias[0] if alias else target.strip()
+        try:
+            os.startfile(exe)
+            return f"Affirmative. Launching {target}."
+        except Exception:
+            binary = shutil.which(exe) or shutil.which(key)
+            if binary:
+                subprocess.Popen([binary], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return f"Affirmative. Launching {target}."
+            return f"Negative, Pilot. Could not locate '{target}'."
+
     cmd = APP_ALIASES.get(key)
     if not cmd:
         binary = shutil.which(key)
@@ -89,12 +149,33 @@ def _launch_app(target: str) -> str:
 
 
 def _close_app(target: str) -> str:
+    if _IS_WIN:
+        key = target.strip().lower()
+        alias = APP_ALIASES.get(key)
+        exe = alias[0] if alias else (key if key.endswith(".exe") else f"{key}.exe")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        res = subprocess.run(["taskkill", "/IM", exe, "/F"], capture_output=True, text=True, creationflags=flags)
+        return f"Target process '{target}' terminated." if res.returncode == 0 else f"No active process matching '{target}'."
+
     proc = "vesktop" if target.strip().lower() == "discord" else target.strip().lower()
     ok, _ = _cmd(["pkill", "-i", "-f", proc])
     return f"Target process '{target}' terminated." if ok else f"No active process matching '{target}'."
 
 
 def _set_volume(val: str) -> str:
+    if _IS_WIN:
+        from plugins.media_control import _windows_volume
+        v = val.strip().lower().replace("%", "")
+        if v in {"mute", "unmute", "toggle"}:
+            return _windows_volume("mute", {"mute": "1", "unmute": "0", "toggle": "toggle"}[v])
+        if v.startswith("+"):
+            return _windows_volume("volume-up", v[1:])
+        if v.startswith("-"):
+            return _windows_volume("volume-down", v[1:])
+        if v.isdigit():
+            return _windows_volume("system-volume", v)
+        return "Specify a volume percentage (0-100), +10/-10, or mute/unmute."
+
     v = val.strip().lower().replace("%", "")
     if v in {"mute", "unmute", "toggle"}:
         flag = {"mute": "1", "unmute": "0", "toggle": "toggle"}[v]
@@ -121,6 +202,12 @@ def _mic_control(state: str) -> str:
 
 
 def _media_control(act: str) -> str:
+    if _IS_WIN:
+        from plugins.media_control import run as _mc_run
+        a = act.strip().lower()
+        cmd = "play-pause" if a == "toggle" else a
+        return _mc_run({"command": cmd})
+
     a = act.strip().lower()
     mapping = {
         "play": ["playerctl", "play"],
@@ -141,26 +228,38 @@ def _media_control(act: str) -> str:
 
 def _telemetry() -> str:
     report: list[str] = []
-    try:
-        meminfo = Path("/proc/meminfo").read_text()
-        total_kb = int(re.search(r"MemTotal:\s+(\d+)", meminfo).group(1))
-        avail_kb = int(re.search(r"MemAvailable:\s+(\d+)", meminfo).group(1))
-        report.append(f"RAM: {(total_kb - avail_kb) / (1024**2):.1f}/{total_kb / (1024**2):.1f} GB")
-    except Exception:
-        pass
-    for bat in Path("/sys/class/power_supply").glob("BAT*"):
-        report.append(f"Battery: {(bat / 'capacity').read_text().strip()}% ({(bat / 'status').read_text().strip()})")
-        break
+    if _IS_WIN:
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            report.append(f"RAM: {mem.used / (1024**3):.1f}/{mem.total / (1024**3):.1f} GB")
+            bat = psutil.sensors_battery()
+            if bat is not None:
+                status = "Charging" if bat.power_plugged else "Discharging"
+                report.append(f"Battery: {bat.percent:.0f}% ({status})")
+        except Exception:
+            pass
+    else:
+        try:
+            meminfo = Path("/proc/meminfo").read_text()
+            total_kb = int(re.search(r"MemTotal:\s+(\d+)", meminfo).group(1))
+            avail_kb = int(re.search(r"MemAvailable:\s+(\d+)", meminfo).group(1))
+            report.append(f"RAM: {(total_kb - avail_kb) / (1024**2):.1f}/{total_kb / (1024**2):.1f} GB")
+        except Exception:
+            pass
+        for bat in Path("/sys/class/power_supply").glob("BAT*"):
+            report.append(f"Battery: {(bat / 'capacity').read_text().strip()}% ({(bat / 'status').read_text().strip()})")
+            break
     if shutil.which("nvidia-smi"):
         ok, gpu = _cmd(["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"])
         if ok and gpu:
             u, t = [x.strip() for x in gpu.split(",")]
-            report.append(f"RTX 3050: {u}% @ {t}°C")
-    if shutil.which("powerprofilesctl"):
+            report.append(f"GPU: {u}% @ {t}°C")
+    if not _IS_WIN and shutil.which("powerprofilesctl"):
         ok, prof = _cmd(["powerprofilesctl", "get"])
         if ok and prof:
             report.append(f"Mode: {prof}")
-    if shutil.which("nmcli"):
+    if not _IS_WIN and shutil.which("nmcli"):
         ok, wifi = _cmd(["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"])
         if ok:
             for line in wifi.splitlines():
@@ -172,6 +271,20 @@ def _telemetry() -> str:
 
 def _kde_action(act: str) -> str:
     a = act.strip().lower()
+    if _IS_WIN:
+        import ctypes
+        if a == "lock":
+            ctypes.windll.user32.LockWorkStation()
+            return "Workstation locked, Pilot."
+        if a == "sleep":
+            ctypes.windll.powrprof.SetSuspendState(0, 1, 0)
+            return "Entering standby."
+        if a == "overview":
+            from plugins._comms_core import win32_send_vk_chord
+            win32_send_vk_chord(0x5B, 0x09)  # Win+Tab
+            return "Opened Windows Task View."
+        return f"Action '{a}' is not available on Windows."
+
     if a == "lock":
         ok, _ = _cmd(["loginctl", "lock-session"])
         return "Workstation locked, Pilot." if ok else "Failed to lock session."
@@ -283,19 +396,23 @@ def run(*args, **kwargs) -> str:
             m = val.lower()
             if m == "study":
                 webbrowser.open("https://www.ck12.org")
-                threading.Thread(
-                    target=lambda: (time.sleep(25 * 60), _cmd(["notify-send", "-u", "critical", "BT-7274 // STUDY", "25-minute block complete, Pilot."])),
-                    daemon=True,
-                ).start()
+                def _study_done():
+                    time.sleep(25 * 60)
+                    if _IS_WIN:
+                        _win_notify("BT-7274 // STUDY", "25-minute block complete, Pilot.")
+                    else:
+                        _cmd(["notify-send", "-u", "critical", "BT-7274 // STUDY", "25-minute block complete, Pilot."])
+                threading.Thread(target=_study_done, daemon=True).start()
                 return "Study protocol engaged: CK-12 opened and 25-minute timer active."
             if m == "gaming":
-                _cmd(["powerprofilesctl", "set", "performance"])
+                if not _IS_WIN:
+                    _cmd(["powerprofilesctl", "set", "performance"])
                 _launch_app("steam")
-                return "Gaming protocol engaged: Performance mode active, Steam launching."
+                return "Gaming protocol engaged: Steam launching."
             if m == "coding":
                 _launch_app("code")
-                _launch_app("konsole")
-                return "Engineering protocol engaged: VS Code and Konsole online."
+                _launch_app("terminal" if _IS_WIN else "konsole")
+                return "Engineering protocol engaged: VS Code and Terminal online."
             return "Valid presets: study, gaming, coding."
         if act == "volume":
             return _set_volume(val)
@@ -307,6 +424,15 @@ def run(*args, **kwargs) -> str:
             return _telemetry()
         if act == "brightness":
             pct = max(5, min(100, int(re.sub(r"\D", "", val) or 50)))
+            if _IS_WIN:
+                try:
+                    import wmi  # type: ignore
+                    c = wmi.WMI(namespace="wmi")
+                    methods = c.WmiMonitorBrightnessMethods()[0]
+                    methods.WmiSetBrightness(pct, 0)
+                    return f"Display luminance set to {pct}%."
+                except Exception as exc:
+                    return f"Brightness error: {exc}"
             ok, out = _cmd(["brightnessctl", "set", f"{pct}%"])
             return f"Display luminance set to {pct}%." if ok else f"Brightness error: {out}"
         if act == "power_profile":
@@ -327,16 +453,55 @@ def run(*args, **kwargs) -> str:
             out_dir = Path.home() / "Pictures" / "BT_Captures"
             out_dir.mkdir(parents=True, exist_ok=True)
             fp = out_dir / f"bt_capture_{int(time.time())}.png"
+            if _IS_WIN:
+                try:
+                    import mss
+                    import mss.tools
+                    with mss.mss() as sct:
+                        shot = sct.grab(sct.monitors[0])
+                        mss.tools.to_png(shot.rgb, shot.size, output=str(fp))
+                    return f"Visual capture saved to {fp}."
+                except Exception as exc:
+                    return f"Capture failed: {exc}"
             flag = {"fullscreen": "-f", "active": "-a", "region": "-r"}.get(val.lower(), "-f")
             ok, out = _cmd(["spectacle", "-b", "-n", flag, "-o", str(fp)], timeout=15)
             return f"Visual capture saved to {fp}." if ok else f"Capture failed: {out}"
         if act == "clipboard_get":
+            if _IS_WIN:
+                try:
+                    import pyperclip
+                    out = pyperclip.paste()
+                    return out if out else "Clipboard is empty."
+                except Exception as exc:
+                    return f"Clipboard error: {exc}"
             ok, out = _cmd(["wl-paste", "--no-newline"])
             return out if ok and out else "Clipboard is empty."
         if act == "clipboard_set":
+            if _IS_WIN:
+                try:
+                    import pyperclip
+                    pyperclip.copy(val)
+                    return "Copied to clipboard."
+                except Exception as exc:
+                    return f"Clipboard error: {exc}"
             subprocess.run(["wl-copy"], input=val, text=True, check=False)
             return "Copied to clipboard."
         if act == "find_file":
+            if _IS_WIN:
+                matches = []
+                q_low = val.lower()
+                for root, _, files in os.walk(Path.home()):
+                    depth = len(Path(root).relative_to(Path.home()).parts)
+                    if depth > 4:
+                        continue
+                    for fn in files:
+                        if q_low in fn.lower():
+                            matches.append(os.path.join(root, fn))
+                            if len(matches) >= 6:
+                                break
+                    if len(matches) >= 6:
+                        break
+                return "\n".join(matches) if matches else f"No files matching '{val}' found."
             cmd = ["fd", "-i", "-H", "--max-results", "6", val, str(Path.home())] if shutil.which("fd") else ["find", str(Path.home()), "-maxdepth", "4", "-iname", f"*{val}*"]
             ok, out = _cmd(cmd)
             return out if ok and out else f"No files matching '{val}' found."
@@ -351,10 +516,13 @@ def run(*args, **kwargs) -> str:
             return nf.read_text(encoding="utf-8")[-1500:] if nf.exists() else "Tactical log is empty."
         if act == "timer":
             mins = float(re.sub(r"[^\d.]", "", val) or 5)
-            threading.Thread(
-                target=lambda: (time.sleep(max(1, int(mins * 60))), _cmd(["notify-send", "-u", "critical", "BT-7274 // TIMER", f"{mins} minute timer complete, Pilot."])),
-                daemon=True,
-            ).start()
+            def _timer_done():
+                time.sleep(max(1, int(mins * 60)))
+                if _IS_WIN:
+                    _win_notify("BT-7274 // TIMER", f"{mins} minute timer complete, Pilot.")
+                else:
+                    _cmd(["notify-send", "-u", "critical", "BT-7274 // TIMER", f"{mins} minute timer complete, Pilot."])
+            threading.Thread(target=_timer_done, daemon=True).start()
             return f"Countdown initialized for {mins} minute(s)."
         if act == "search":
             webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote_plus(val)}")

@@ -1369,36 +1369,17 @@ class GestureTracker:
     def _worker_loop(self) -> None:
         try:
             self._reading_from_vcam = False
-            if sys.platform == "win32":
-                self._cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-                if not self._cap.isOpened() and self.camera_index != 0:
-                    self._cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-                if not self._cap.isOpened():
-                    self._cap = cv2.VideoCapture(self.camera_index)
-            elif sys.platform == "darwin":
-                # macOS AVFoundation camera backend
-                cap_backend = getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
-                self._cap = cv2.VideoCapture(self.camera_index, cap_backend)
-                if not self._cap.isOpened() and self.camera_index != 0:
-                    self._cap = cv2.VideoCapture(0, cap_backend)
-                if not self._cap.isOpened():
-                    self._cap = cv2.VideoCapture(self.camera_index)
-            else:
+            try:
+                from core.camera_devices import open_camera
+                self._cap, self._reading_from_vcam = open_camera(
+                    self.camera_index, width=640, height=480, fps=30
+                )
+                if self._reading_from_vcam and self.on_log:
+                    self.on_log("SYS: Primary camera busy; attached to virtual loopback (/dev/video10).")
+            except Exception:
                 self._cap = cv2.VideoCapture(self.camera_index)
-                if not self._cap.isOpened() and self.camera_index != 0:
-                    # Try fallback index 0
-                    self._cap = cv2.VideoCapture(0)
 
-                # Fallback: if physical camera /dev/video0 is in use by another app or nvbroadcast,
-                # attach to virtual loopback /dev/video10
-                if not self._cap.isOpened() and os.path.exists("/dev/video10"):
-                    self._cap = cv2.VideoCapture("/dev/video10")
-                    if self._cap.isOpened():
-                        self._reading_from_vcam = True
-                        if self.on_log:
-                            self.on_log("SYS: Primary camera busy; attached to virtual loopback (/dev/video10).")
-
-            if not self._cap.isOpened():
+            if self._cap is None or not self._cap.isOpened():
                 self._running = False
                 if self.on_log:
                     self.on_log("ERR: Cannot open webcam device for gesture control (camera busy or disconnected).")

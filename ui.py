@@ -5609,20 +5609,10 @@ class MainWindow(QMainWindow):
         try:
             import cv2
             from memory.config_manager import get_camera_index
+            from core.camera_devices import open_camera
             cam_idx = get_camera_index()
-            try:
-                backend = cv2.CAP_DSHOW if _OS == "Windows" else cv2.CAP_ANY
-            except AttributeError:
-                backend = 0
-            cap = cv2.VideoCapture(cam_idx, backend)
-            reading_vcam = False
-            if not cap.isOpened() and cam_idx != 0:
-                cap = cv2.VideoCapture(0)
-            if not cap.isOpened() and os.path.exists("/dev/video10"):
-                cap = cv2.VideoCapture("/dev/video10")
-                if cap.isOpened():
-                    reading_vcam = True
-            if not cap.isOpened():
+            cap, reading_vcam = open_camera(cam_idx)
+            if cap is None or not cap.isOpened():
                 return
             # warm-up frames
             for _ in range(5):
@@ -6294,14 +6284,18 @@ class MainWindow(QMainWindow):
         mid.setSpacing(0)
         _disp = self._assistant_name.upper()
         self._title_lbl = QLabel(_disp)
-        self._title_lbl.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
-        self._title_lbl.setStyleSheet("color: #ffffff; background: transparent; letter-spacing: 2px;")
+        _title_font = QFont("Segoe UI", 18, QFont.Weight.Bold)
+        _title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2.0)
+        self._title_lbl.setFont(_title_font)
+        self._title_lbl.setStyleSheet("color: #ffffff; background: transparent; padding: 0 6px;")
         self._title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mid.addWidget(self._title_lbl)
 
         self._sub_lbl = QLabel("VANGUARD-CLASS TITAN // NEURAL LINK")
-        self._sub_lbl.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
-        self._sub_lbl.setStyleSheet("color: #ffaa00; background: transparent; letter-spacing: 1px;")
+        _sub_font = QFont("Segoe UI", 7, QFont.Weight.Bold)
+        _sub_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
+        self._sub_lbl.setFont(_sub_font)
+        self._sub_lbl.setStyleSheet("color: #ffaa00; background: transparent; padding: 0 8px;")
         self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mid.addWidget(self._sub_lbl)
         lay.addLayout(mid)

@@ -237,11 +237,16 @@ def _capture_camera() -> tuple[bytes, str]:
     if not _CV2:
         raise RuntimeError("OpenCV (cv2) is not installed. Run: pip install opencv-python")
 
-    index   = _get_camera_index()
-    backend = _cv2_backend()
-    cap     = cv2.VideoCapture(index, backend)
+    index = _get_camera_index()
+    try:
+        from core.camera_devices import open_camera
+        cap, _ = open_camera(index)
+    except Exception:
+        cap = cv2.VideoCapture(index, _cv2_backend())
 
-    if not cap.isOpened():
+    if cap is None or not cap.isOpened():
+        if cap is not None:
+            cap.release()
         raise RuntimeError(f"Camera index {index} could not be opened.")
 
     for _ in range(10):
